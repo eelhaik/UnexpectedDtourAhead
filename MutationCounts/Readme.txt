@@ -28,6 +28,8 @@ The dbSNP data was downloaded from NCBI's FTP site (last accessed 9/9/2024):
 - Generates allele counts for both dbSNP and HGDP datasets.  
 
 ### 4. Generate Plots  
+- The script PlotWindowPercents.py generates Figure 2. 
+- The script PlotWindowPercents_all_chrs.py generates Figure S1. 
 
 #### Single-Chromosome Plot  
 **Script:** `PlotWindowPercents.py`  
