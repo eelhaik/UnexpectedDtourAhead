@@ -7,7 +7,10 @@ C++ and Python codes to reproduce all the figures in the manuscript are availabl
 - The C++ script Source1\Source.cpp generates Tables 2 and 3 and data for Figures 7, 8, 9, 10 and S2. 
 - The C++ script Source2\Source2n.cpp generates data for Figures 4, 5, 6, 11 and S3
 - The Python script MutationCounts\PlotWindowPercents.py generates Figure 2. 
-- The Python script MutationCounts\PlotWindowPercents_all_chrs.py generates Figure S1. 
+- The Python script MutationCounts\PlotWindowPercents_all_chrs.py generates Figure S1.
+
+An R interface is available to plot all the figures using the data files produced by the C++ scripts.
+To access the interface, open in R Graphic_Interface\UnexpectedDTour.R. Load a file that combines both results (e.g., Graphic_Interface\CombinedData.txt) and choose which figure to plot.
 
 The folders Source1 and Source2 include the source files in C++, as well as compiled files for Windows and Linux.
 Each folder also includes the outcome of the code for chromosome 22 (chr22.zip).
