@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Define the input VCF file and the file with CHROM IDs
+vcf_file="GCF_000001405.40"
+chrom_ids_file="Chr_Autosome_IDs.txt"
+output_file="output_no_indels_common.txt"
+
+# Extract the relevant columns from the VCF file and output to output_no_indels_common.txt
+awk -v OFS='\t' '
+    BEGIN {
+        # Read the CHROM IDs into an associative array
+        while ((getline < "'"$chrom_ids_file"'") > 0) {
+            chrom_ids[$1] = 1;  # Use the first column as the key
+        }
+    }
+    /^#/ { next }  # Skip header and metadata lines
+    {
+        # Check if CHROM is in the chrom_ids map, REF is a single letter,
+        # ALT is valid (single letter or single letters separated by commas),
+        # and the word "COMMON" is at the end of the row
+        if ($1 in chrom_ids && length($4) == 1 && ($5 ~ /^[A-Za-z](,[A-Za-z])*$|^[A-Za-z]$/) && $0 ~ /COMMON$/) {
+            print $1, $2, $3, $4, $5;  # Print CHROM, POS, ID, REF, ALT
+        }
+    }
+' "$vcf_file" > "$output_file"
+
+# Confirm the operation
+echo "Filtered VCF data with 'COMMON' has been written to $output_file"
