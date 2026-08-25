@@ -1,0 +1,877 @@
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
+namespace fs = std::filesystem;
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+struct Config {
+    fs::path input_directory;
+    fs::path output_file;
+
+    int first_chromosome = 1;
+    int last_chromosome = 22;
+
+    long window_size = 50'000;
+
+    std::string input_prefix = "MASTER_CHR";
+    std::string input_suffix = ".txt";
+};
+
+// ============================================================================
+// Constants and data structures
+// ============================================================================
+
+constexpr std::size_t NUM_POPULATIONS = 26;
+constexpr std::size_t NUM_TYPES = 3;
+constexpr std::size_t NUM_COMPARISONS = 3;
+constexpr std::size_t NUM_VALUES = 2;
+constexpr std::size_t NUM_HET_BINS = 100;
+
+using PopulationFrequencies =
+std::array<float, NUM_POPULATIONS>;
+
+using AbbaArray =
+std::array<
+    std::array<
+    std::array<float, NUM_VALUES>,
+    NUM_COMPARISONS>,
+    NUM_TYPES>;
+
+using DArray =
+std::array<
+    std::array<
+    std::array<
+    std::array<float, NUM_VALUES>,
+    NUM_COMPARISONS>,
+    NUM_HET_BINS>,
+    NUM_TYPES>;
+
+using MuArray =
+std::array<
+    std::array<float, NUM_VALUES>,
+    NUM_HET_BINS>;
+
+// ============================================================================
+// Input record
+// ============================================================================
+
+struct Site {
+    std::string chromosome;
+    long position = 0;
+
+    std::string reference;
+    std::string alternate;
+
+    PopulationFrequencies frequencies{};
+
+    float fqAFR = 0.0f;
+    float fqNAF = 0.0f;
+
+    // Retained because these may be used by other analyses.
+    int MAJ1 = 0;
+    int MAJ2 = 0;
+    int tp = 0;
+    int CP = 0;
+};
+
+// ============================================================================
+// Parse one input line
+// ============================================================================
+
+bool parse_site(const std::string& line, Site& site)
+{
+    std::istringstream iss(line);
+
+    if (!(iss >> site.chromosome
+        >> site.position
+        >> site.reference
+        >> site.alternate)) {
+        return false;
+    }
+
+    for (float& frequency : site.frequencies) {
+        if (!(iss >> frequency)) {
+            return false;
+        }
+    }
+
+    return static_cast<bool>(
+        iss >> site.fqAFR
+        >> site.fqNAF
+        >> site.MAJ1
+        >> site.MAJ2
+        >> site.tp
+        >> site.CP
+        );
+}
+
+// ============================================================================
+// Convert heterozygosity value to output bin
+// ============================================================================
+
+int heterozygosity_bin(float value)
+{
+    int bin = static_cast<int>(value + 10.0f);
+
+    if (bin < 0) {
+        return 0;
+    }
+
+    if (bin >= static_cast<int>(NUM_HET_BINS)) {
+        return static_cast<int>(NUM_HET_BINS) - 1;
+    }
+
+    return bin;
+}
+
+// ============================================================================
+// Calculate mean frequency for five populations
+// ============================================================================
+
+float mean_frequency(const PopulationFrequencies& frequencies,
+    std::size_t first,
+    std::size_t count)
+{
+    float sum = 0.0f;
+
+    for (std::size_t i = first; i < first + count; ++i) {
+        sum += frequencies[i];
+    }
+
+    return sum / static_cast<float>(count);
+}
+
+// ============================================================================
+// Calculate ABBA/BABA-type values
+// ============================================================================
+
+void D_calc(float fqEUR,
+    float fqEAS,
+    float fqAFR,
+    int NE,
+    int CM,
+    int type,
+    AbbaArray& abba)
+{
+    if (type < 0 ||
+        type >= static_cast<int>(NUM_TYPES)) {
+        return;
+    }
+
+    auto& a = abba[type];
+
+    if (NE == 1 && CM == 0) {
+
+        a[0][0] += fqEUR * (1.0f - fqAFR);
+        a[0][1] += fqAFR * (1.0f - fqEUR);
+
+        a[1][0] += fqEAS * (1.0f - fqAFR);
+        a[1][1] += fqAFR * (1.0f - fqEAS);
+
+        a[2][0] += fqEAS * (1.0f - fqEUR);
+        a[2][1] += fqEUR * (1.0f - fqEAS);
+
+    }
+    else if (NE == 0 && CM == 1) {
+
+        a[0][0] += fqAFR * (1.0f - fqEUR);
+        a[0][1] += fqEUR * (1.0f - fqAFR);
+
+        a[1][0] += fqAFR * (1.0f - fqEAS);
+        a[1][1] += fqEAS * (1.0f - fqAFR);
+
+        a[2][0] += fqEUR * (1.0f - fqEAS);
+        a[2][1] += fqEAS * (1.0f - fqEUR);
+    }
+}
+
+// ============================================================================
+// Flush one genomic window
+// ============================================================================
+
+void flush_window(float het1,
+    float het2,
+    float het3,
+    float het4,
+    float mu1,
+    float mu2,
+    AbbaArray& abba,
+    DArray& d,
+    MuArray& mu)
+{
+    const int h1 = heterozygosity_bin(het1);
+    const int h2 = heterozygosity_bin(het2);
+    const int h3 = heterozygosity_bin(het3);
+    const int h4 = heterozygosity_bin(het4);
+
+    const std::array<int, NUM_COMPARISONS> bins = {
+        h1, h2, h3
+    };
+
+    for (std::size_t type = 0;
+        type < NUM_TYPES;
+        ++type) {
+
+        for (std::size_t comparison = 0;
+            comparison < NUM_COMPARISONS;
+            ++comparison) {
+
+            const int bin = bins[comparison];
+
+            d[type][bin][comparison][0] +=
+                abba[type][comparison][0];
+
+            d[type][bin][comparison][1] +=
+                abba[type][comparison][1];
+
+            abba[type][comparison][0] = 0.0f;
+            abba[type][comparison][1] = 0.0f;
+        }
+    }
+
+    mu[h4][0] += mu1;
+    mu[h4][1] += mu2;
+}
+
+// ============================================================================
+// Process one chromosome
+// ============================================================================
+
+bool process_chromosome(int chromosome,
+    const Config& config,
+    DArray& d,
+    MuArray& mu)
+{
+    const fs::path input_file =
+        config.input_directory /
+        (config.input_prefix +
+            std::to_string(chromosome) +
+            config.input_suffix);
+
+    std::ifstream input(input_file);
+
+    if (!input) {
+        std::cerr << "\nERROR: Could not open:\n"
+            << "  " << input_file << "\n\n";
+        return false;
+    }
+
+    std::cout << "Analysing chromosome "
+        << chromosome << "...\n";
+
+    AbbaArray abba{};
+
+    long previous_window = -1;
+
+    float het_total1 = 0.0f;
+    float het_total2 = 0.0f;
+    float het_total3 = 0.0f;
+    float het_total4 = 0.0f;
+
+    float mu1 = 0.0f;
+    float mu2 = 0.0f;
+
+    std::string line;
+
+    // Skip header.
+    if (!std::getline(input, line)) {
+        std::cerr << "WARNING: File is empty: "
+            << input_file << '\n';
+        return true;
+    }
+
+    long line_number = 1;
+
+    while (std::getline(input, line)) {
+
+        ++line_number;
+
+        if (line.empty()) {
+            continue;
+        }
+
+        Site site;
+
+        if (!parse_site(line, site)) {
+            std::cerr << "WARNING: Could not parse line "
+                << line_number
+                << " in "
+                << input_file
+                << '\n';
+
+            continue;
+        }
+
+        const long window =
+            site.position / config.window_size;
+
+        // A new genomic window has started.
+        if (previous_window >= 0 &&
+            window > previous_window) {
+
+            flush_window(
+                het_total1,
+                het_total2,
+                het_total3,
+                het_total4,
+                mu1,
+                mu2,
+                abba,
+                d,
+                mu
+            );
+
+            het_total1 = 0.0f;
+            het_total2 = 0.0f;
+            het_total3 = 0.0f;
+            het_total4 = 0.0f;
+
+            mu1 = 0.0f;
+            mu2 = 0.0f;
+        }
+
+        previous_window = window;
+
+        // --------------------------------------------------------------------
+        // Population frequencies
+        // --------------------------------------------------------------------
+
+        const float fqEUR =
+            mean_frequency(site.frequencies, 0, 5);
+
+        const float fqEAS =
+            mean_frequency(site.frequencies, 5, 5);
+
+        const float fqAFRICA =
+            mean_frequency(site.frequencies, 15, 5);
+
+        // --------------------------------------------------------------------
+		// D calculations, CP values 0, 1, 4, 5, 6, 7 refer to outgroup bases
+        // --------------------------------------------------------------------
+
+        switch (site.CP) {
+
+        case 0:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                1, 0, 0,
+                abba
+            );
+            break;
+
+        case 1:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                0, 1, 0,
+                abba
+            );
+            break;
+
+        case 4:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                0, 1, 1,
+                abba
+            );
+            break;
+
+        case 5:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                1, 0, 1,
+                abba
+            );
+            break;
+
+        case 6:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                1, 0, 2,
+                abba
+            );
+            break;
+
+        case 7:
+            D_calc(
+                fqEUR, fqEAS, fqAFRICA,
+                0, 1, 2,
+                abba
+            );
+            break;
+
+        default:
+            break;
+        }
+
+        // --------------------------------------------------------------------
+        // MU
+        // --------------------------------------------------------------------
+
+        switch (site.CP) {
+
+        case 1:
+        case 2:
+        case 4:
+        case 7:
+
+            mu1 +=
+                fqEUR * (1.0f - fqAFRICA);
+
+            mu2 +=
+                fqAFRICA * (1.0f - fqEUR);
+
+            break;
+
+        case 0:
+        case 3:
+        case 5:
+        case 6:
+
+            mu1 +=
+                fqAFRICA * (1.0f - fqEUR);
+
+            mu2 +=
+                fqEUR * (1.0f - fqAFRICA);
+
+            break;
+
+        default:
+            break;
+        }
+
+        // --------------------------------------------------------------------
+        // Heterozygosity differences
+        // --------------------------------------------------------------------
+
+        het_total1 +=
+            2.0f * fqAFRICA * (1.0f - fqAFRICA) -
+            2.0f * fqEUR * (1.0f - fqEUR);
+
+        het_total2 +=
+            2.0f * fqAFRICA * (1.0f - fqAFRICA) -
+            2.0f * fqEAS * (1.0f - fqEAS);
+
+        het_total3 +=
+            2.0f * fqEUR * (1.0f - fqEUR) -
+            2.0f * fqEAS * (1.0f - fqEAS);
+
+        het_total4 +=
+            2.0f * site.fqAFR * (1.0f - site.fqAFR) -
+            2.0f * site.fqNAF * (1.0f - site.fqNAF);
+    }
+
+    // ------------------------------------------------------------------------
+    // IMPORTANT: flush the final window of the chromosome.
+    // ------------------------------------------------------------------------
+
+    if (previous_window >= 0) {
+
+        flush_window(
+            het_total1,
+            het_total2,
+            het_total3,
+            het_total4,
+            mu1,
+            mu2,
+            abba,
+            d,
+            mu
+        );
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Write results
+// ============================================================================
+
+void write_output(const Config& config,
+    const DArray& d,
+    const MuArray& mu)
+{
+    std::ofstream output(config.output_file);
+
+    if (!output) {
+        throw std::runtime_error(
+            "Could not open output file: " +
+            config.output_file.string()
+        );
+    }
+
+    output << "Metrics in relation to heterozygosity difference Africa - non-Africa\n\n";
+    output << "Outgroups\tXBXA\t\tXBXA\t\tXBXA\t\tBBBA\t\tBBBA\t\tBBBA\t\tBBAA\t\tBBAA\t\tBBAA";
+	output << "\t\tXBXA\tXBXA\tXBXA\tBBBA\tBBBA\tBBBA\tBBAA\tBBAA\tBBAA\n";
+    output << "Comparison\tEUR_AFR\t\tEAS_AFR\t\tEAS_EUR\t\tEUR_AFR\t\tEAS_AFR\t\tEAS_EUR\t\tEUR_AFR\t\tEAS_AFR\t\tEAS_EUR";
+    output << "\t\tEUR_AFR\tEAS_AFR\tEAS_EUR\tEUR_AFR\tEAS_AFR\tEAS_EUR\tEUR_AFR\tEAS_AFR\tEAS_EUR\n";
+
+    output << "HET_DIF";
+    for (int i = 0; i < 9; i++) output << "\tABBA\tBABA";
+    for (int i = 0; i < 9; i++) output << "\tD";
+	output << "\tMU_AFR\tMU_NAF\tRelMU\n";
+
+    for (std::size_t h = 0;
+        h < NUM_HET_BINS;
+        ++h) {
+
+        output << static_cast<int>(h) - 10;
+
+        // --------------------------------------------------------------------
+        // Raw D values
+        // --------------------------------------------------------------------
+
+        for (std::size_t type = 0;
+            type < NUM_TYPES;
+            ++type) {
+
+            for (std::size_t comparison = 0;
+                comparison < NUM_COMPARISONS;
+                ++comparison) {
+
+                output
+                    << '\t'
+                    << d[type][h][comparison][0]
+                    << '\t'
+                    << d[type][h][comparison][1];
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // D statistics
+        // --------------------------------------------------------------------
+
+        for (std::size_t type = 0;
+            type < NUM_TYPES;
+            ++type) {
+
+            for (std::size_t comparison = 0;
+                comparison < NUM_COMPARISONS;
+                ++comparison) {
+
+                const float numerator =
+                    d[type][h][comparison][0] -
+                    d[type][h][comparison][1];
+
+                const float denominator =
+                    d[type][h][comparison][0] +
+                    d[type][h][comparison][1];
+
+                output << '\t';
+
+                if (denominator > 2.0f) {
+                    output << numerator / denominator;
+                }
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // MU
+        // --------------------------------------------------------------------
+
+        output
+            << '\t'
+            << mu[h][0]
+            << '\t'
+            << mu[h][1];
+        if (mu[h][1] > 0) output << '\t' << mu[h][0] / mu[h][1];
+        output << '\n';
+    }
+}
+
+// ============================================================================
+// Get an integer from the user
+// ============================================================================
+
+int get_integer(const std::string& prompt,
+    int default_value)
+{
+    while (true) {
+
+        std::cout << prompt
+            << " [" << default_value << "]: ";
+
+        std::string input;
+        std::getline(std::cin, input);
+
+        if (input.empty()) {
+            return default_value;
+        }
+
+        try {
+            std::size_t position = 0;
+            int value = std::stoi(input, &position);
+
+            if (position == input.size()) {
+                return value;
+            }
+        }
+        catch (...) {
+        }
+
+        std::cout << "Please enter a valid integer.\n";
+    }
+}
+
+// ============================================================================
+// Get a long integer from the user
+// ============================================================================
+
+long get_long(const std::string& prompt,
+    long default_value)
+{
+    while (true) {
+
+        std::cout << prompt
+            << " [" << default_value << "]: ";
+
+        std::string input;
+        std::getline(std::cin, input);
+
+        if (input.empty()) {
+            return default_value;
+        }
+
+        try {
+            std::size_t position = 0;
+            long value = std::stol(input, &position);
+
+            if (position == input.size()) {
+                return value;
+            }
+        }
+        catch (...) {
+        }
+
+        std::cout << "Please enter a valid number.\n";
+    }
+}
+
+// ============================================================================
+// Get configuration interactively
+// ============================================================================
+
+Config get_configuration()
+{
+    Config config;
+
+    std::cout
+        << "\n"
+        << "============================================\n"
+        << "   Polymorphic Site Analysis\n"
+        << "============================================\n\n";
+
+    // ------------------------------------------------------------------------
+    // Input directory
+    // ------------------------------------------------------------------------
+
+    while (true) {
+
+        std::cout
+            << "Input directory containing MASTER_CHR files\n"
+            << "Example: H:\\genome_data\n"
+            << "> ";
+
+        std::string directory;
+        std::getline(std::cin, directory);
+
+        if (directory.empty()) {
+            std::cout << "Please enter a directory.\n";
+            continue;
+        }
+
+        config.input_directory = fs::path(directory);
+
+        if (!fs::exists(config.input_directory)) {
+            std::cout
+                << "That directory does not exist.\n"
+                << "Please try again.\n\n";
+
+            continue;
+        }
+
+        if (!fs::is_directory(config.input_directory)) {
+            std::cout
+                << "That path is not a directory.\n\n";
+
+            continue;
+        }
+
+        break;
+    }
+
+    // ------------------------------------------------------------------------
+    // Output file
+    // ------------------------------------------------------------------------
+
+    while (true) {
+
+        std::cout
+            << "\nOutput filename\n"
+            << "Example: HETDIF_D_MU_results.txt\n"
+            << "> ";
+
+        std::string filename;
+        std::getline(std::cin, filename);
+
+        if (filename.empty()) {
+            std::cout << "Please enter an output filename.\n";
+            continue;
+        }
+
+        fs::path output(filename);
+
+        // If only a filename was entered, put it in the current directory.
+        if (output.is_relative()) {
+            config.output_file =
+                fs::current_path() / output;
+        }
+        else {
+            config.output_file = output;
+        }
+
+        break;
+    }
+
+    // ------------------------------------------------------------------------
+    // Chromosomes
+    // ------------------------------------------------------------------------
+
+    config.first_chromosome =
+        get_integer(
+            "\nFirst chromosome",
+            1
+        );
+
+    config.last_chromosome =
+        get_integer(
+            "Last chromosome",
+            22
+        );
+
+    // ------------------------------------------------------------------------
+    // Window size
+    // ------------------------------------------------------------------------
+
+    config.window_size =
+        get_long(
+            "\nGenomic window size",
+            50'000
+        );
+
+    return config;
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+int main()
+{
+    try {
+
+        Config config = get_configuration();
+
+        // --------------------------------------------------------------------
+        // Validate configuration
+        // --------------------------------------------------------------------
+
+        if (config.first_chromosome < 1 ||
+            config.last_chromosome < config.first_chromosome) {
+
+            std::cerr
+                << "\nERROR: Invalid chromosome range.\n";
+
+            return 1;
+        }
+
+        if (config.window_size <= 0) {
+
+            std::cerr
+                << "\nERROR: Window size must be positive.\n";
+
+            return 1;
+        }
+
+        // --------------------------------------------------------------------
+        // Show configuration
+        // --------------------------------------------------------------------
+
+        std::cout
+            << "\n============================================\n"
+            << "Configuration\n"
+            << "============================================\n"
+            << "Input directory : "
+            << config.input_directory << '\n'
+            << "Output file     : "
+            << config.output_file << '\n'
+            << "Chromosomes     : "
+            << config.first_chromosome
+            << "-"
+            << config.last_chromosome << '\n'
+            << "Window size     : "
+            << config.window_size << '\n'
+            << "============================================\n\n";
+
+        // --------------------------------------------------------------------
+        // Allocate result arrays
+        // --------------------------------------------------------------------
+
+        DArray d{};
+        MuArray mu{};
+
+        // --------------------------------------------------------------------
+        // Process chromosomes
+        // --------------------------------------------------------------------
+
+        for (int chromosome = config.first_chromosome;
+            chromosome <= config.last_chromosome;
+            ++chromosome) {
+
+            if (!process_chromosome(
+                chromosome,
+                config,
+                d,
+                mu)) {
+
+                return 1;
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // Write output
+        // --------------------------------------------------------------------
+
+        write_output(
+            config,
+            d,
+            mu
+        );
+
+        std::cout
+            << "\n============================================\n"
+            << "Analysis complete.\n"
+            << "Results written to:\n"
+            << config.output_file << '\n'
+            << "============================================\n\n";
+    }
+    catch (const std::exception& e) {
+
+        std::cerr
+            << "\nERROR: "
+            << e.what()
+            << '\n';
+
+        return 1;
+    }
+
+    return 0;
+}
+

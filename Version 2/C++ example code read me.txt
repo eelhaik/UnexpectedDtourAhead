@@ -1,0 +1,21 @@
+C++ example code read me
+
+The example code processes our input files, each of which contains summary data from the high coverage 1000 genomes data aligned to the Vindija Neanderthal, Altai Neanderthal, Denisovan and chimpanzee in that order. Only biallelic SNPs were retained and we required all outgroups to have been scored. Each chromosome file contains data for all valid sites, summarised in the following fields:
+
+CHR chromosome number
+LOC location (GR38)
+REF reference allele
+ALT alternate allele
+fqGBR . . fqPEL	26 alternate allele frequencies based on the first 100 chromosomes encountered in each population
+fqAFR, fqASIA alternate allele frequencies in Africa and outside Africa based on balanced samples (see methods) 	
+MAJ1 major allele where the same allele is the major allele inside and outside Africa, -1 = ambiguous, 0 = reference is major, 1 = alternate is major
+MAJ2 major where ambiguous sites by taking the major allele in the pooled sample	
+TRIP mutating ancestral triplet. Triplet order is: AAA, AAC, AAG, AAT, CAA, CAC, CAG, CAT, GAA, GAC, GAG, GAT, TAA, TAC, TAG, TAT followed by the same order with central 'C', giving a basic unit of 32 triplets (triplets with central G or T are converted to their opposite strand equivalents). With this order, triplets 1-32 are transversions outside CpG islands, 33-64 are transitions outside CpG islands, 65-96 are transversions inside CpG islands, 97-128 are transitions inside CpG islands.
+OGP is a code representing outgroup conformations: 0=X1X0, 1=X0X1, 2=0000, 3=1111, 4=0001, 5=1110, 6=1100, 7=0011. 0=reference allele, 1=alternate allele
+
+The code can be pasted into a suitable C++ compiler (we used Visual Studio 2022). When run, the user is prompted for the location of the master files, an output filename (which should include the full path), the start and end chromosomes and the size of window to analyse. We stress that this is an example code provided as a start point and its main function is to provide a core script that correctly parses the input files. The user needs to decide which of the many possible outputs they wish to replicate, and edit the code appropriately.
+
+The example script scans all sites in the selected range of chromosomes and calculates the total heterozygosity difference between Africans and non-Africans based on fqAFR and fqASIA (for ASIA read Eurasia), which is then integerised and converted to a convenient scale in the range 0-100 by adding 10 (most values are positive because Africa generally has higher heterozygosity, but the minority negative values need to be brought to or above zero). Values outside this range are converted to the nearest limit (>99 -> 99, <0 -> 0). Each window is analysed to calculate D(pop1,pop2,Altai,chimpanzee) for three classes of site: XBXA, BBBA, BBAA and three population comparisons (EUR-AFR, EAS-AFR, EAS-EUR), stored as raw ABBA and BABA counts. It also calculates and store by heterozygosity bin the relative mutate rate for each window, based on a comparisons between Europe and Africa. NB if difference window sizes are selected, the heterozygosity values will change proportionately and the user should edit the code to make the range sensible. For example, if a window size of 100,000 is chosen, all heterozygosity differences will be twice as large, so it might be sensible to divide the raw values by 2 before generating bin values.
+
+
+At the end of each run, the script outputs ABBA counts, BABA counts and D for each of the nine different scenrios (3 outgroup conformations x 3 population comparisons), plus the relative mutaiton rate estimator. Adapting this script to generate any of the other outputs we present is easy via free-to-use AI but we are also happy to provide scripts in response to specific requests. NB wherever data are partitioned by triplet, the ABBA/BABA counts tend to be quite modest, so we advise analysing the entire genome so that stochastic noise is minimised. 
