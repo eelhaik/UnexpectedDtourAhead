@@ -1,4 +1,4 @@
-# Scripts — README
+# Version 2 Scripts
 
 This folder contains two independent pieces of code used in the paper:
 
