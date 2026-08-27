@@ -4,6 +4,7 @@ This folder contains two independent pieces of code used in the paper:
 
 1. **`Example C++ code.txt`** — parses the genomic input files (`MASTER_CHR*` files) and computes windowed heterozygosity, ABBA/BABA counts, D statistics, and a relative mutation-rate estimator.
 2. **`ESM10.zip`** — a SLiM forward simulation package (population-genetic simulation), together with the triplet mutation-rate matrix `mm_forSLiM.csv` that it depends on.
+3. **1KG VCF Files** -Compressed files of the type MASTER_CHR*.txt are available here: https://zenodo.org/records/22119343
 
 These are examples/starting points, not turnkey pipelines — both read-me files below stress that the user is expected to adapt the code to the specific output they want.
 
